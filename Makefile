@@ -1,7 +1,7 @@
 # xgpuprofile
 # See LICENSE file for copyright and license details.
 
-VERSION ?= 1.0.0
+VERSION ?= 0.1.0
 CC      ?= cc
 
 CFLAGS ?= -Os
@@ -11,7 +11,6 @@ CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Wpointer-arith -Wshadow \
 
 CPPFLAGS += -DVERSION=\"${VERSION}\"
 
-# No libraries beyond libc: everything comes from sysfs.
 LDLIBS ?=
 
 PREFIX     ?= /usr/local
@@ -37,7 +36,6 @@ clean:
 
 install: $(TARGET)
 	install -Dm755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(BIN)
-	install -Dm755 $(BIN)-xrandr $(DESTDIR)$(PREFIX)/bin/$(BIN)-xrandr
 	[ -f $(DESTDIR)$(SYSCONFDIR)/$(BIN).conf ] \
 		|| install -Dm644 $(BIN).conf $(DESTDIR)$(SYSCONFDIR)/$(BIN).conf
 	install -d $(DESTDIR)$(SYSCONFDIR)/X11/xorg.conf.d
@@ -51,14 +49,9 @@ install: $(TARGET)
 	@echo "    sudo systemctl daemon-reload"
 	@echo "    sudo systemctl enable $(BIN).service"
 	@echo "    sudo $(BIN) --mode auto"
-	@echo
-	@echo "Then add this to ~/.xinitrc, before exec'ing your window manager"
-	@echo "(or to your display manager's session startup) - required, or the"
-	@echo "built-in panel stays dark under the discrete layout:"
-	@echo "    $(PREFIX)/bin/$(BIN)-xrandr"
 
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)-xrandr
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	rm -f $(DESTDIR)$(SYSTEMDDIR)/$(BIN).service
 	rm -f $(DESTDIR)$(SYSCONFDIR)/X11/xorg.conf.d/10-$(BIN).conf
 	rm -f $(DESTDIR)$(MANPREFIX)/man1/$(BIN).1

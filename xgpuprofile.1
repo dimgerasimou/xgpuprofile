@@ -16,18 +16,18 @@ xgpuprofile \- choose which GPU drives the X display
 .RB [ \-\-verbose ]
 
 .SH DESCRIPTION
-On a hybrid laptop the external video outputs are wired to the discrete
-GPU. While the integrated GPU owns the X screen, those displays are driven
-by copying every frame across PCIe for the discrete GPU to scan out, which
-does not keep up at high resolution and refresh rate. Handing the screen to
-the discrete GPU removes the copy.
+On most laptops with hybrid graphics the external video outputs are wired
+to the discrete GPU. While the integrated GPU owns the X screen, high
+refresh rate and resolution monitors lag. Handing X to the discrete GPU
+resolves the problem.
 
 .PP
-The cost is that the discrete GPU can then never reach its deepest idle
-power state, so
+The cost is that the discrete GPU can then never reaches its deepest idle
+power state.
+
 .B xgpuprofile
-does not simply leave it on. It writes an Xorg configuration fragment that
-selects one of two layouts, and chooses between them from a saved mode.
+resolves this by starting the X screen on the appropriate GPU, based on
+the current state of the laptop (AC power, external monitors).
 
 .PP
 Nothing is switched while X is running. Xorg fixes its GPU assignment when
@@ -129,30 +129,6 @@ Unconditionally, which is the same as
 .PP
 A machine with no battery counts as being on mains.
 
-.SH THE RUNTIME HALF
-The fragment can hand the screen to the discrete GPU and keep the
-integrated one present, but it cannot connect them: attaching the
-integrated GPU's outputs as a scanout sink for the discrete one is an
-.BR xrandr (1)
-call, and that needs a running X server.
-
-.PP
-.B xgpuprofile-xrandr
-does this, and must be run from the session startup \- from
-.I ~/.xinitrc
-before exec'ing a window manager, or from a display manager's session
-script. On a laptop it is not optional: without it the built\-in panel stays
-dark whenever the discrete layout is active, because nothing is scanning
-out for it.
-
-.PP
-It is safe to run unconditionally. Under the hybrid layout there is no
-provider pair to join and it does nothing, so one session startup works for
-both. The provider names it looks for can be overridden with
-.B XGPUPROFILE_SOURCE
-and
-.BR XGPUPROFILE_SINK .
-
 .SH DETECTION
 External displays are counted from a live X session via
 .BR xrandr (1)
@@ -161,14 +137,6 @@ when
 is reachable, since that reflects what is actually driving the desktop.
 Kernel sysfs connector status is used only when no X session can be
 reached, which is the case at boot, before Xorg starts.
-
-.PP
-This split works around a real driver limitation: NVIDIA's DRM/KMS
-connector status is not reliably kept in sync with reality once its own
-driver stack is managing the display, so reading it from inside a running
-session can report a connected monitor as absent. The kernel probe is
-accurate only before anything has taken that over \- exactly the boot\-time
-case.
 
 .PP
 The discrete GPU is the PCI display device the firmware did not mark
@@ -223,15 +191,6 @@ xgpuprofile \-\-refresh \-\-dry\-run
 .fi
 .RE
 
-.SH EXIT STATUS
-Exits 0 on success and 1 on failure.
-
 .SH SEE ALSO
 .BR Xorg (1),
 .BR xrandr (1)
-
-.SH BUGS
-A decision is only made when Xorg starts, so plugging a display in
-mid\-session changes nothing until the layout is re\-staged with
-.B \-\-refresh
-and applied, or until the next reboot.

@@ -2,20 +2,20 @@
  * Copyright (c) 2026 Dimitris Gerasimou
  * Licensed under the GNU General Public License v3.
  *
+ * Automatically select the GPU the X screen runs, through rules.
  * Makes the discrete GPU the primary X screen when a configurable rule
  * says it is worth it, and stays out of the way otherwise.
  *
  * On a hybrid laptop the external video outputs are wired to the discrete
- * GPU. While the integrated GPU owns the X screen, those displays are
- * driven by copying every frame across PCIe for the discrete GPU to scan
- * out, which does not keep up at high resolution and refresh. Driving
- * them directly removes the copy, at the cost of the discrete GPU never
- * reaching its deepest idle power state - hence the rule.
+ * GPU. While the integrated GPU owns the X screen, external high resolution
+ * high refresh monitors become laggy. Driving them on the dGPU resolves
+ * this, but the GPU never reaches the low-power idle states.
  *
- * The decision is written as an xorg.conf.d fragment before Xorg starts.
- * Xorg's GPU assignment is fixed for the life of the server, so nothing
- * is ever switched at runtime: no modules are unloaded, no session is
- * torn down, and there is no daemon. That is the whole design.
+ * This utility decides which card X should run on, based on the rule and
+ * hardware setup (AC power, external monitors), then writes the decision
+ * as an xorg fragment before X starts. Thus no daemon is required,
+ * no session is torn down, no modules unloaded, at the cost of the GPU
+ * assignment being tied to life of the X server.
  *
  * To understand everything, start reading main().
  */
@@ -66,20 +66,18 @@
 #define STRMAX  128
 #define SLOTMAX 16
 
-/* When the discrete GPU should take over the display. */
 typedef enum {
-	RULE_BOTH = 0, /* on mains and an external display attached */
+	RULE_BOTH = 0,
 	RULE_EITHER,
 	RULE_AC,
 	RULE_EXTERNAL,
 	RULE_ALWAYS,
 } Rule;
 
-/* Which layout to use, and how it is chosen. */
 typedef enum {
-	MODE_HYBRID = 0, /* never hand over; integrated GPU keeps the screen */
-	MODE_AUTO,       /* let the rule decide */
-	MODE_DGPU,       /* always hand over to the discrete GPU */
+	MODE_HYBRID = 0,
+	MODE_AUTO,
+	MODE_DGPU,
 } Mode;
 
 typedef struct {
@@ -91,15 +89,12 @@ typedef struct {
 } Config;
 
 typedef struct {
-	char slot[SLOTMAX];   /* PCI slot, e.g. 0000:01:00.0 */
-	char busid[STRMAX];   /* Xorg BusID, e.g. PCI:1:0:0 */
+	char slot[SLOTMAX];   /* PCI slot */
+	char busid[STRMAX];   /* Xorg BusID */
 	char driver[STRMAX];  /* bound kernel driver */
 	int found;
 
-	/* The integrated GPU, which stays in the layout as an inactive
-	 * device. The built-in panel is wired to it, so leaving it out
-	 * entirely turns the internal display off.
-	 */
+	/* leaving this out entirely turns the internal display off. */
 	char igpu_busid[STRMAX];
 	int igpu_found;
 } Gpu;
@@ -107,13 +102,6 @@ typedef struct {
 static int verbose;
 static const char *prog = "xgpuprofile";
 
-/* Connector name fragments that denote a built-in panel. Everything else
- * (HDMI, DP, DVI, VGA) is an external plug.
- *
- * Excluding these is not cosmetic: on a hybrid laptop the built-in panel
- * is often reachable through the discrete GPU as well, so counting it
- * would make "an external display is attached" permanently true.
- */
 static const char *const internal_connectors[] = {
 	"eDP", "LVDS", "DSI", "Writeback", NULL,
 };
@@ -159,8 +147,6 @@ static int act_once(const Config *cfg, const char *want);
 static void hint_apply(void);
 static int need_root(const char *what);
 static void usage(void);
-
-/* --- small helpers ------------------------------------------------- */
 
 static void
 warn_(const char *fmt, ...)
@@ -248,8 +234,6 @@ copy_str(char *dst, size_t dstsz, const char *src)
 	return 0;
 }
 
-/* --- configuration -------------------------------------------------- */
-
 static const char *
 mode_name(Mode m)
 {
@@ -324,9 +308,6 @@ config_defaults(Config *cfg)
 	copy_str(cfg->driver, sizeof(cfg->driver), "auto");
 }
 
-/* A missing file is not an error: the defaults stand, which is the
- * "installed but not configured" state.
- */
 static void
 config_load(Config *cfg, const char *path)
 {
@@ -428,8 +409,6 @@ config_set_mode(const char *path, Mode mode)
 	return 0;
 }
 
-/* --- detection ------------------------------------------------------ */
-
 /*
  * The discrete GPU is the PCI display device the firmware did not mark
  * boot_vga. Detecting it means the generated fragment is correct without
@@ -484,10 +463,6 @@ detect_gpu(Gpu *gpu)
 				boot_vga = 1;
 		}
 
-		/* The GPU the firmware brought up is the integrated one. It is
-		 * not what we make primary, but the layout still needs its
-		 * BusID.
-		 */
 		if (boot_vga) {
 			if (sscanf(de->d_name, "%*x:%x:%x.%x", &bus, &dev, &func) == 3) {
 				snprintf(gpu->igpu_busid, sizeof(gpu->igpu_busid),
@@ -613,9 +588,6 @@ connector_slot(const char *conn_dir, char *slot, size_t slotsz)
 	return copy_str(slot, slotsz, found);
 }
 
-/* Counts connected external displays; if `slot` is set, only those on
- * that PCI device.
- */
 static int
 count_external(const char *slot)
 {
@@ -668,21 +640,7 @@ count_external(const char *slot)
 	return count;
 }
 
-/*
- * Counts connected external outputs by asking a live X server, when one is
- * reachable, rather than the kernel.
- *
- * NVIDIA's DRM/KMS connector status is not reliably kept in sync with
- * reality once its own driver stack is actively managing the display -
- * this is a known rough edge of its KMS support, not specific to any one
- * machine. Before Xorg starts nothing has taken that over yet, so the
- * plain kernel probe in count_external() is accurate; the moment a
- * session exists, xrandr's own view is the trustworthy one, since it is
- * simply reporting what is actually driving the desktop.
- *
- * Returns the count on success, -1 if no X session could be reached (no
- * DISPLAY, or xrandr is missing or failed) so the caller can fall back.
- */
+/* Returns the count on success, -1 if no X session could be reached. */
 static int
 count_external_xrandr(void)
 {
@@ -706,9 +664,6 @@ count_external_xrandr(void)
 		if (sscanf(line, "%63s", name) != 1)
 			continue;
 
-		/* Check the more specific word first: "disconnected" contains
-		 * "connected" as a substring.
-		 */
 		if (strstr(line, " disconnected"))
 			continue;
 		if (!strstr(line, " connected"))
@@ -721,18 +676,11 @@ count_external_xrandr(void)
 			count++;
 	}
 
-	/* A non-zero exit means xrandr could not run at all (missing, or no
-	 * reachable X server despite DISPLAY being set) - the count gathered
-	 * up to that point is not meaningful, so the caller must fall back
-	 * rather than trust a possibly-partial zero.
-	 */
 	if (pclose(p) != 0)
 		return -1;
 
 	return count;
 }
-
-/* --- the xorg fragment ---------------------------------------------- */
 
 static int
 snippet_write(const Gpu *gpu, const char *driver)
@@ -907,11 +855,7 @@ dm_restart(const char *unit)
 	return -1;
 }
 
-/* --- actions --------------------------------------------------------- */
-
-/* `ac` is -1 where the machine has no battery, which trivially satisfies
- * any mains condition.
- */
+/* `ac` is -1 where the machine has no battery */
 static int
 rule_satisfied(Rule r, int ac, int ext)
 {
@@ -1064,13 +1008,6 @@ hint_apply(void)
 	       "    sudo %s --restart-x\n", prog);
 }
 
-/*
- * Applies a layout right now, ignoring mode and rule, and deliberately
- * writes nothing to the config file. That is what makes it a one-off: the
- * next --refresh - including the one the next normal boot runs - decides
- * again from the unchanged config and undoes this. There is nothing to
- * remember to reset.
- */
 static int
 act_once(const Config *cfg, const char *want)
 {
@@ -1123,7 +1060,6 @@ act_once(const Config *cfg, const char *want)
 	return 0;
 }
 
-/* Sets the saved mode and stages the layout that follows from it. */
 static int
 act_mode(Config *cfg, const char *path, const char *want)
 {

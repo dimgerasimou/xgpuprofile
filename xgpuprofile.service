@@ -9,12 +9,8 @@ Before=display-manager.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# DRM connector probing - EDID, link training - is asynchronous, so an
-# external display can still be reported as absent if this runs the instant
-# the driver loads. A short fixed delay is blunt, but reliable, and this
-# runs once per boot. (systemd-udev-settle would be the obvious ordering
-# dependency, but it is deprecated and does not cover connector probing
-# anyway.)
+# Short delay a blunt but reliable way to ensure external displays are
+# initialized properly.
 ExecStartPre=/bin/sleep 2
 ExecStart=@BINDIR@/xgpuprofile --refresh
 
