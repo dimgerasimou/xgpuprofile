@@ -1,0 +1,22 @@
+[Unit]
+Description=Choose the GPU layout before the display server starts
+Documentation=man:xgpuprofile(1)
+# Display managers install this alias, so ordering before it means the
+# layout is settled by the time Xorg is launched. Harmless if no display
+# manager is installed and X is started by hand.
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# DRM connector probing - EDID, link training - is asynchronous, so an
+# external display can still be reported as absent if this runs the instant
+# the driver loads. A short fixed delay is blunt, but reliable, and this
+# runs once per boot. (systemd-udev-settle would be the obvious ordering
+# dependency, but it is deprecated and does not cover connector probing
+# anyway.)
+ExecStartPre=/bin/sleep 2
+ExecStart=@BINDIR@/xgpuprofile --refresh
+
+[Install]
+WantedBy=multi-user.target

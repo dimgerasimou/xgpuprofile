@@ -1,0 +1,237 @@
+.TH XGPUPROFILE 1 "August 2026" "xgpuprofile VERSION" "General Commands Manual"
+.SH NAME
+xgpuprofile \- choose which GPU drives the X display
+.SH SYNOPSIS
+.B xgpuprofile
+.RB [ \-\-status ]
+.RB [ \-\-mode
+.IR MODE ]
+.RB [ \-\-once
+.IR MODE ]
+.RB [ \-\-refresh ]
+.RB [ \-\-restart\-x ]
+.RB [ \-\-config
+.IR PATH ]
+.RB [ \-\-dry\-run ]
+.RB [ \-\-verbose ]
+
+.SH DESCRIPTION
+On a hybrid laptop the external video outputs are wired to the discrete
+GPU. While the integrated GPU owns the X screen, those displays are driven
+by copying every frame across PCIe for the discrete GPU to scan out, which
+does not keep up at high resolution and refresh rate. Handing the screen to
+the discrete GPU removes the copy.
+
+.PP
+The cost is that the discrete GPU can then never reach its deepest idle
+power state, so
+.B xgpuprofile
+does not simply leave it on. It writes an Xorg configuration fragment that
+selects one of two layouts, and chooses between them from a saved mode.
+
+.PP
+Nothing is switched while X is running. Xorg fixes its GPU assignment when
+the server starts, so a change is only ever
+.I staged
+\- written to the fragment \- and takes effect the next time Xorg starts.
+No kernel modules are unloaded and no session is torn down behind your
+back, which is where tools that switch live tend to hang or fail.
+
+.SH MODES
+.TP
+.B hybrid
+Keep the integrated GPU. The ordinary low\-power arrangement.
+.TP
+.B auto
+Decide with the rule from the configuration \- see
+.BR RULES .
+.TP
+.B dgpu
+Always hand the display to the discrete GPU.
+
+.SH ACTIONS
+One at a time.
+.B \-\-status
+is used when none is given.
+.TP
+.B \-\-status
+Print the saved mode, what was detected, and whether the running session is
+using the layout the configuration now calls for.
+.TP
+.BI \-\-mode " MODE"
+Save
+.I MODE
+and stage the layout it implies. Persists across reboots.
+.TP
+.BI \-\-once " MODE"
+Stage
+.B dgpu
+or
+.B hybrid
+for the next session only, ignoring the saved mode and rule, and write
+nothing to the configuration file. Nothing has to be undone afterwards: the
+next
+.B \-\-refresh
+decides again from the unchanged configuration, and the one that runs at
+boot does so on its own.
+.TP
+.B \-\-refresh
+Decide from the saved configuration and update the fragment. This is what
+.B xgpuprofile.service
+runs before Xorg starts; running it by hand is only needed to re\-stage
+after the hardware or the configuration has changed mid\-session.
+.TP
+.B \-\-restart\-x
+Restart the display manager so a staged change applies immediately. Ends
+the current session, and asks for confirmation first.
+
+.SH OPTIONS
+.TP
+.BI \-\-config " PATH"
+Use a different configuration file.
+.TP
+.B \-\-dry\-run
+With
+.BR \-\-refresh ,
+report the decision and change nothing. Needs no privileges.
+.TP
+.B \-\-verbose
+Explain each step on standard error.
+.TP
+.B \-\-version
+Print version and exit.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+
+.SH RULES
+With
+.BR "mode = auto" ,
+the
+.B rule
+setting decides when to use the discrete GPU.
+.TP
+.B both
+On mains power and with an external display attached. The default.
+.TP
+.B either
+On mains power or with an external display attached.
+.TP
+.B ac
+On mains power, whatever is plugged in.
+.TP
+.B external
+With an external display attached, whatever the power source.
+.TP
+.B always
+Unconditionally, which is the same as
+.BR "mode = dgpu" .
+.PP
+A machine with no battery counts as being on mains.
+
+.SH THE RUNTIME HALF
+The fragment can hand the screen to the discrete GPU and keep the
+integrated one present, but it cannot connect them: attaching the
+integrated GPU's outputs as a scanout sink for the discrete one is an
+.BR xrandr (1)
+call, and that needs a running X server.
+
+.PP
+.B xgpuprofile-xrandr
+does this, and must be run from the session startup \- from
+.I ~/.xinitrc
+before exec'ing a window manager, or from a display manager's session
+script. On a laptop it is not optional: without it the built\-in panel stays
+dark whenever the discrete layout is active, because nothing is scanning
+out for it.
+
+.PP
+It is safe to run unconditionally. Under the hybrid layout there is no
+provider pair to join and it does nothing, so one session startup works for
+both. The provider names it looks for can be overridden with
+.B XGPUPROFILE_SOURCE
+and
+.BR XGPUPROFILE_SINK .
+
+.SH DETECTION
+External displays are counted from a live X session via
+.BR xrandr (1)
+when
+.B DISPLAY
+is reachable, since that reflects what is actually driving the desktop.
+Kernel sysfs connector status is used only when no X session can be
+reached, which is the case at boot, before Xorg starts.
+
+.PP
+This split works around a real driver limitation: NVIDIA's DRM/KMS
+connector status is not reliably kept in sync with reality once its own
+driver stack is managing the display, so reading it from inside a running
+session can report a connected monitor as absent. The kernel probe is
+accurate only before anything has taken that over \- exactly the boot\-time
+case.
+
+.PP
+The discrete GPU is the PCI display device the firmware did not mark
+.IR boot_vga ,
+and the integrated one is the device that carries that mark. The integrated
+GPU stays in the generated layout as an
+.B Inactive
+device, because the built\-in panel is wired to it and leaving it out turns
+the internal display off. Xorg BusIDs are emitted in decimal, though the
+sysfs slot names are hexadecimal, and driver names come from the bound
+kernel driver. All of these can be overridden in the configuration.
+
+.PP
+External displays are outputs whose name is not an internal panel type \-
+eDP, LVDS, DSI. Excluding those matters: on a hybrid laptop the built\-in
+panel is often reachable through the discrete GPU as well, and counting it
+would leave the external\-display condition permanently true.
+
+.SH FILES
+.TP
+.I /etc/xgpuprofile.conf
+Configuration; every setting is documented in the file.
+.TP
+.I /etc/X11/xorg.conf.d/10-xgpuprofile.conf
+The generated fragment. Written and removed automatically; edits are lost.
+
+.SH EXAMPLES
+.PP
+Follow the rule from now on:
+.PP
+.RS
+.nf
+sudo xgpuprofile \-\-mode auto
+.fi
+.RE
+.PP
+Use the discrete GPU for one session, with no monitor attached, without
+disturbing the saved configuration:
+.PP
+.RS
+.nf
+sudo xgpuprofile \-\-once dgpu
+sudo xgpuprofile \-\-restart\-x
+.fi
+.RE
+.PP
+See what would be chosen, changing nothing:
+.PP
+.RS
+.nf
+xgpuprofile \-\-refresh \-\-dry\-run
+.fi
+.RE
+
+.SH EXIT STATUS
+Exits 0 on success and 1 on failure.
+
+.SH SEE ALSO
+.BR Xorg (1),
+.BR xrandr (1)
+
+.SH BUGS
+A decision is only made when Xorg starts, so plugging a display in
+mid\-session changes nothing until the layout is re\-staged with
+.B \-\-refresh
+and applied, or until the next reboot.
