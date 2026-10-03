@@ -138,7 +138,8 @@ static int dm_resolve(const char *override, char *unit, size_t unitsz);
 static int dm_restart(const char *unit);
 
 static int rule_satisfied(Rule r, int ac, int ext);
-static int evaluate(const Config *cfg, Gpu *gpu, int *ac, int *ext);
+static int gpu_suspended(const Gpu *gpu);
+static int evaluate(const Config *cfg, Gpu *gpu, int *ac, int *ext, int probe);
 static int act_refresh(const Config *cfg, int dry_run);
 static int act_status(const Config *cfg, const char *path);
 static int act_restart_x(const Config *cfg);
@@ -871,8 +872,30 @@ rule_satisfied(Rule r, int ac, int ext)
 	}
 }
 
+/* Reading runtime_status does not resume the device. */
 static int
-evaluate(const Config *cfg, Gpu *gpu, int *ac, int *ext)
+gpu_suspended(const Gpu *gpu)
+{
+	char path[PATH_MAX], buf[32];
+
+	if (!gpu->slot[0])
+		return 0;
+	if (snprintf(path, sizeof(path), "%s/%s/power/runtime_status",
+	             SYS_PCI_DIR, gpu->slot) >= (int)sizeof(path))
+		return 0;
+	if (read_line(path, buf, sizeof(buf)) < 0)
+		return 0;
+
+	return !strcmp(buf, "suspended");
+}
+
+/*
+ * Returns 1 (dgpu), 0 (hybrid), or -1 when the answer depends on the
+ * external display count and probing it would wake a suspended dGPU.
+ * With probe set, displays are always queried and -1 is never returned.
+ */
+static int
+evaluate(const Config *cfg, Gpu *gpu, int *ac, int *ext, int probe)
 {
 	detect_gpu(gpu);
 
@@ -883,12 +906,17 @@ evaluate(const Config *cfg, Gpu *gpu, int *ac, int *ext)
 
 	*ac = detect_ac();
 
-	*ext = count_external_xrandr();
-	if (*ext >= 0) {
-		vinfo("external displays: %d (from the running X session)", *ext);
+	if (!probe && gpu_suspended(gpu)) {
+		vinfo("discrete GPU suspended; not probing displays");
+		*ext = -1;
 	} else {
-		*ext = gpu->found ? count_external(gpu->slot) : 0;
-		vinfo("external displays: %d (no X session reachable; used sysfs)", *ext);
+		*ext = count_external_xrandr();
+		if (*ext >= 0) {
+			vinfo("external displays: %d (from the running X session)", *ext);
+		} else {
+			*ext = gpu->found ? count_external(gpu->slot) : 0;
+			vinfo("external displays: %d (no X session reachable; used sysfs)", *ext);
+		}
 	}
 
 	if (!gpu->found)
@@ -897,7 +925,13 @@ evaluate(const Config *cfg, Gpu *gpu, int *ac, int *ext)
 	switch (cfg->mode) {
 	case MODE_HYBRID: return 0;
 	case MODE_DGPU:   return 1;
-	default:          return rule_satisfied(cfg->rule, *ac, *ext);
+	default:
+		if (*ext < 0) {
+			int lo = rule_satisfied(cfg->rule, *ac, 0);
+
+			return lo == rule_satisfied(cfg->rule, *ac, 1) ? lo : -1;
+		}
+		return rule_satisfied(cfg->rule, *ac, *ext);
 	}
 }
 
@@ -907,7 +941,7 @@ act_refresh(const Config *cfg, int dry_run)
 	Gpu gpu;
 	int ac, ext, engage;
 
-	engage = evaluate(cfg, &gpu, &ac, &ext);
+	engage = evaluate(cfg, &gpu, &ac, &ext, 1);
 
 	vinfo("mode=%s rule=%s ac=%d external=%d -> %s", mode_name(cfg->mode),
 	      rule_name(cfg->rule), ac, ext, engage ? "dgpu" : "hybrid");
@@ -944,7 +978,7 @@ act_status(const Config *cfg, const char *path)
 	char unit[STRMAX];
 	int ac, ext, want, have;
 
-	want = evaluate(cfg, &gpu, &ac, &ext);
+	want = evaluate(cfg, &gpu, &ac, &ext, 0);
 	have = snippet_present();
 
 	printf("Configuration  (%s)\n", path);
@@ -969,7 +1003,11 @@ act_status(const Config *cfg, const char *path)
 
 	printf("  Power        %s\n",
 	       ac < 0 ? "no battery" : (ac ? "on mains" : "on battery"));
-	printf("  External     %d display%s connected\n", ext, ext == 1 ? "" : "s");
+	if (ext < 0)
+		printf("  External     not checked (discrete GPU suspended)\n");
+	else
+		printf("  External     %d display%s connected\n", ext,
+		       ext == 1 ? "" : "s");
 
 	if (dm_resolve(cfg->display_manager, unit, sizeof(unit)) == 0)
 		printf("  Session      %s\n", unit);
@@ -979,6 +1017,14 @@ act_status(const Config *cfg, const char *path)
 	printf("\nLayout\n");
 	printf("  Running      %s\n",
 	       have ? "discrete GPU" : "integrated GPU (hybrid)");
+	if (want < 0) {
+		printf("  Should be    unknown\n");
+		printf("\nNot checked: the rule depends on external displays, and\n"
+		       "probing them would wake the suspended discrete GPU. Run\n"
+		       "'%s --refresh --dry-run' to check anyway.\n", prog);
+		return 0;
+	}
+
 	printf("  Should be    %s\n",
 	       want ? "discrete GPU" : "integrated GPU (hybrid)");
 
