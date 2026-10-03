@@ -39,6 +39,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable xgpuprofile.service
 ```
 
+Bash and zsh completions are installed alongside the binary.
+
 ## Modes
 
 | mode | what it does |

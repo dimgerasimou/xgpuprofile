@@ -13,10 +13,12 @@ CPPFLAGS += -DVERSION=\"${VERSION}\"
 
 LDLIBS ?=
 
-PREFIX     ?= /usr/local
-MANPREFIX  ?= ${PREFIX}/share/man
-SYSCONFDIR ?= /etc
-SYSTEMDDIR ?= ${PREFIX}/lib/systemd/system
+PREFIX      ?= /usr/local
+MANPREFIX   ?= ${PREFIX}/share/man
+SYSCONFDIR  ?= /etc
+SYSTEMDDIR  ?= ${PREFIX}/lib/systemd/system
+BASHCOMPDIR ?= ${PREFIX}/share/bash-completion/completions
+ZSHCOMPDIR  ?= ${PREFIX}/share/zsh/site-functions
 
 BIN    := xgpuprofile
 SRC    := xgpuprofile.c
@@ -44,6 +46,8 @@ install: $(TARGET)
 	install -d $(DESTDIR)$(MANPREFIX)/man1
 	sed "s/VERSION/$(VERSION)/g" < $(BIN).1 > $(DESTDIR)$(MANPREFIX)/man1/$(BIN).1
 	chmod 644 $(DESTDIR)$(MANPREFIX)/man1/$(BIN).1
+	install -Dm644 $(BIN).bash $(DESTDIR)$(BASHCOMPDIR)/$(BIN)
+	install -Dm644 $(BIN).zsh $(DESTDIR)$(ZSHCOMPDIR)/_$(BIN)
 	@echo
 	@echo "Installed. Next:"
 	@echo "    sudo systemctl daemon-reload"
@@ -55,6 +59,8 @@ uninstall:
 	rm -f $(DESTDIR)$(SYSTEMDDIR)/$(BIN).service
 	rm -f $(DESTDIR)$(SYSCONFDIR)/X11/xorg.conf.d/10-$(BIN).conf
 	rm -f $(DESTDIR)$(MANPREFIX)/man1/$(BIN).1
+	rm -f $(DESTDIR)$(BASHCOMPDIR)/$(BIN)
+	rm -f $(DESTDIR)$(ZSHCOMPDIR)/_$(BIN)
 	@echo "Removed. Config left at $(SYSCONFDIR)/$(BIN).conf"
 
 .PHONY: all clean install uninstall
